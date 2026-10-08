@@ -8,7 +8,7 @@
   var DISCLAIMER = 'היעדים והערכות המזון הם אומדנים לצורכי מעקב ואינם תחליף לייעוץ תזונתי אישי.';
 
   /* ---------- נתונים ---------- */
-  function blank() { return { v: 1, profile: null, goals: [], foods: [], meals: [], diary: [], weights: [] }; }
+  function blank() { return { v: 1, profile: null, goals: [], foods: [], meals: [], diary: [], weights: [], settings: { usdaKey: '' } }; }
   function load() {
     try {
       var r = localStorage.getItem(KEY);
@@ -17,6 +17,7 @@
     return blank();
   }
   var S = load();
+  if (!S.settings) S.settings = { usdaKey: '' };
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(S)); return true; }
     catch (e) { toast('השמירה נכשלה. ייתכן שהאחסון בטלפון מלא או חסום'); return false; }
@@ -48,7 +49,7 @@
   }
   function setPath(o, path, v) { var p = path.split('.'); for (var i = 0; i < p.length - 1; i++) o = o[p[i]]; o[p[p.length - 1]] = v; }
 
-  var ui = { screen: S.profile ? 'main' : 'wizard', tab: 'today', date: C.today(), add: { meal: guessMeal(), tab: 'foods', q: '', pick: null, editFood: null }, set: null, wiz: null, res: null };
+  var ui = { screen: S.profile ? 'main' : 'wizard', tab: 'today', date: C.today(), add: { meal: guessMeal(), tab: 'foods', q: '', pick: null, editFood: null, prefill: null, search: { q: '', results: null, loading: false, err: null } }, set: null, wiz: null, res: null };
   if (ui.screen === 'wizard') ui.wiz = newWiz('new');
 
   /* ---------- שאלון ---------- */
@@ -297,10 +298,13 @@
         '<div class="row"><button class="link" data-a="unpick">חזרה לרשימה</button><button class="link" data-a="efood" data-id="' + f.id + '">עריכת מוצר</button><button class="link" data-a="dfood" data-id="' + f.id + '" style="color:var(--bad)">מחיקת מוצר</button></div></div>';
       return h;
     }
-    h += '<div class="tabs">' + [['foods', 'המוצרים שלי'], ['fav', 'מועדפים'], ['meals', 'ארוחות שמורות'], ['manual', 'הזנה ידנית']].map(function (t) { return '<button class="' + (A.tab === t[0] ? 'on' : '') + '" data-a="atab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+    h += '<button class="block primary" data-a="scan">📷 סריקת ברקוד</button>';
+    h += '<div class="tabs">' + [['foods', 'המוצרים שלי'], ['search', 'חיפוש במאגר'], ['fav', 'מועדפים'], ['meals', 'ארוחות שמורות'], ['manual', 'הזנה ידנית']].map(function (t) { return '<button class="' + (A.tab === t[0] ? 'on' : '') + '" data-a="atab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
     if (A.tab === 'foods' || A.tab === 'fav') {
       h += '<input data-in="q" placeholder="חיפוש לפי שם או מותג" value="' + esc(A.q) + '"><div id="flist">' + foodList() + '</div>';
       h += '<button class="block" data-a="copyday">העתקה מיום קודם</button>';
+    } else if (A.tab === 'search') {
+      h += searchTab();
     } else if (A.tab === 'meals') {
       if (!S.meals.length) h += '<p class="mute">עוד אין ארוחות שמורות. במסך “היום” אפשר לשמור ארוחה קיימת.</p>';
       S.meals.forEach(function (m) {
@@ -310,8 +314,17 @@
           '<div class="row"><button class="primary grow" type="submit">הוסף ליומן</button><button type="button" class="danger" data-a="dmeal" data-id="' + m.id + '">מחק</button></div></form></div>';
       });
     } else {
-      h += manualForm(A.editFood ? S.foods.filter(function (x) { return x.id === A.editFood; })[0] : null);
+      h += manualForm(A.editFood ? S.foods.filter(function (x) { return x.id === A.editFood; })[0] : null, A.prefill);
     }
+    return h;
+  }
+  function searchTab() {
+    var s = ui.add.search;
+    var h = '<form data-f="search"><div class="row"><input name="q" placeholder="חיפוש מזון באנגלית (למשל banana, white rice)" value="' + esc(s.q) + '"><button class="primary" type="submit">חפש</button></div></form>' +
+      '<p class="mute">החיפוש פונה למאגר USDA (באנגלית, מאכלים כלליים ומותגים אמריקאים). למוצרים ארוזים מקומיים עדיף לסרוק ברקוד. הערכים הם ל-100 גרם.</p>';
+    if (s.loading) h += '<div class="okbox">מחפש…</div>';
+    else if (s.err) h += '<div class="err">' + esc(s.err) + '</div>';
+    else if (s.results) h += s.results.length ? s.results.map(searchResultCard).join('') : '<p class="mute">לא נמצאו תוצאות. נסה מילים אחרות באנגלית.</p>';
     return h;
   }
   function foodList() {
@@ -326,16 +339,18 @@
         '<button class="link" data-a="fav" data-id="' + f.id + '" aria-label="מועדף" style="font-size:24px">' + (f.fav ? '★' : '☆') + '</button></div></div>';
     }).join('');
   }
-  function manualForm(f) {
-    var per = f ? f.per : { kcal: null, p: null, c: null, f: null };
+  function manualForm(f, prefill) {
+    var src = f || (prefill && prefill.food) || null;
+    var per = src ? src.per : { kcal: null, p: null, c: null, f: null };
     function v(x) { return x === null || x === undefined ? '' : r1(x); }
-    return '<form data-f="manual"' + (f ? ' data-id="' + f.id + '"' : '') + '>' +
-      '<label>שם המזון</label><input name="name" value="' + esc(f ? f.name : '') + '">' +
-      '<label>מותג (לא חובה)</label><input name="brand" value="' + esc(f ? f.brand : '') + '">' +
-      '<label>הערכים התזונתיים נמסרו</label><select name="base">' + [['100g', 'ל-100 גרם'], ['100ml', 'ל-100 מ״ל'], ['serving', 'למנה']].map(function (o) { return '<option value="' + o[0] + '"' + (f && f.base === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+    return (prefill && !f ? '<div class="okbox">' + esc(prefill.msg) + '</div>' : '') +
+      '<form data-f="manual"' + (f ? ' data-id="' + f.id + '"' : '') + (!f && src && src.source ? ' data-src="' + esc(src.source) + '"' : '') + '>' +
+      '<label>שם המזון</label><input name="name" value="' + esc(src ? src.name : '') + '">' +
+      '<label>מותג (לא חובה)</label><input name="brand" value="' + esc(src ? src.brand : '') + '">' +
+      '<label>הערכים התזונתיים נמסרו</label><select name="base">' + [['100g', 'ל-100 גרם'], ['100ml', 'ל-100 מ״ל'], ['serving', 'למנה']].map(function (o) { return '<option value="' + o[0] + '"' + (src && src.base === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
       '<div class="grid2"><div><label>קלוריות (קק״ל)</label><input name="kcal" inputmode="decimal" value="' + v(per.kcal) + '"></div><div><label>או אנרגיה (קילו-ג׳אול)</label><input name="kj" inputmode="decimal"></div>' +
       '<div><label>חלבון (ג׳)</label><input name="p" inputmode="decimal" value="' + v(per.p) + '"></div><div><label>פחמימות (ג׳)</label><input name="c" inputmode="decimal" value="' + v(per.c) + '"></div>' +
-      '<div><label>שומן (ג׳)</label><input name="f" inputmode="decimal" value="' + v(per.f) + '"></div><div><label>משקל או נפח מנה (אם ידוע)</label><input name="sw" inputmode="decimal" value="' + (f && f.sw ? f.sw : '') + '"></div></div>' +
+      '<div><label>שומן (ג׳)</label><input name="f" inputmode="decimal" value="' + v(per.f) + '"></div><div><label>משקל או נפח מנה (אם ידוע)</label><input name="sw" inputmode="decimal" value="' + (src && src.sw ? src.sw : '') + '"></div></div>' +
       '<p class="mute">שדה שנשאר ריק נשמר כ“לא ידוע” ולא כאפס. משקל מנה בגרמים למוצר ל-100 גרם, ובמ״ל למוצר ל-100 מ״ל.</p>' +
       (f ? '' : '<hr><label>כמות שנאכלה</label><div class="grid2"><input name="qty" inputmode="decimal" placeholder="לא חובה"><select name="unit"><option value="g">גרם</option><option value="ml">מ״ל</option><option value="serving">מנות</option></select></div><label>ארוחה</label>' + mealSelect(ui.add.meal) +
         '<label class="check"><input type="checkbox" name="keep" checked><span>שמור גם כמוצר אישי</span></label>') +
@@ -353,6 +368,120 @@
     var n = C.nutrition(item, qty, unit);
     if (n.error) { toast(n.error); return null; }
     return { id: uid(), date: date, meal: meal, name: item.name, brand: item.brand || '', source: item.source || 'manual', qty: qty, unit: unit, base: item.base, per: item.per, sw: item.sw || 0, snap: n.values };
+  }
+
+  /* ---------- מאגרי מזון חיצוניים (חיפוש וברקוד) ---------- */
+  var USER_AGENT = 'NutritionPWA/1.0 (github.com/Dvir-Ledani/nutrition)';
+  function numOrNull(x) { return (x === null || x === undefined || x === '' || isNaN(Number(x))) ? null : Number(x); }
+
+  function mapUsda(food) {
+    var byId = {};
+    (food.foodNutrients || []).forEach(function (n) { if (n.nutrientId != null) byId[n.nutrientId] = n.value; });
+    var p = numOrNull(byId[1003]), c = numOrNull(byId[1005]), f = numOrNull(byId[1004]);
+    var kcal = numOrNull(byId[1008]);
+    if (kcal === null) kcal = numOrNull(byId[2047]);
+    if (kcal === null) kcal = numOrNull(byId[2048]);
+    if (kcal === null && (p !== null || c !== null || f !== null)) kcal = 4 * (p || 0) + 4 * (c || 0) + 9 * (f || 0);
+    var brand = food.brandName || food.brandOwner || '';
+    return { name: food.description || 'מזון', brand: brand, base: '100g', per: { kcal: kcal, p: p, c: c, f: f }, sw: 0, source: 'usda', _type: food.dataType || '' };
+  }
+
+  async function usdaSearch(query) {
+    var key = (S.settings.usdaKey || '').trim() || 'DEMO_KEY';
+    var url = 'https://api.nal.usda.gov/fdc/v1/foods/search?api_key=' + encodeURIComponent(key) +
+      '&query=' + encodeURIComponent(query) + '&pageSize=20&dataType=' + encodeURIComponent('Foundation,SR Legacy,Branded');
+    var r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (r.status === 429) throw new Error('יותר מדי בקשות למאגר כרגע. נסה שוב בעוד דקה, או הזן מפתח USDA אישי בהגדרות');
+    if (r.status === 403) throw new Error('המפתח ל-USDA אינו תקף. בדוק אותו בהגדרות');
+    if (!r.ok) throw new Error('שגיאת רשת מול USDA (' + r.status + ')');
+    var j = await r.json();
+    return (j.foods || []).map(mapUsda).filter(function (x) { return x.per.kcal !== null || x.per.p !== null || x.per.c !== null || x.per.f !== null; });
+  }
+
+  function mapOff(prod, code) {
+    var n = prod.nutriments || {};
+    var per = prod.nutrition_data_per || '100g';
+    var base = per === '100ml' ? '100ml' : per === 'serving' ? 'serving' : '100g';
+    var suf = base === 'serving' ? '_serving' : '_100g';
+    function pick(stem) { var v = n[stem + suf]; if (v === undefined) v = n[stem]; return numOrNull(v); }
+    var kcal = pick('energy-kcal');
+    if (kcal === null) { var kj = n['energy-kj' + suf]; if (kj === undefined) kj = n['energy' + suf]; if (kj === undefined) kj = n['energy']; if (numOrNull(kj) !== null) kcal = C.kjToKcal(Number(kj)); }
+    var sw = 0;
+    if (base !== 'serving' && prod.serving_size) { var m = String(prod.serving_size).match(/[\d.]+/); if (m) sw = Number(m[0]) || 0; }
+    var name = (prod.product_name_he && prod.product_name_he.trim()) || (prod.product_name && prod.product_name.trim()) || ('מוצר ' + code);
+    var brand = (prod.brands || '').split(',')[0].trim();
+    return { name: name, brand: brand, base: base, per: { kcal: kcal, p: pick('proteins'), c: pick('carbohydrates'), f: pick('fat') }, sw: sw, source: 'off' };
+  }
+
+  async function offLookup(code) {
+    var url = 'https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) +
+      '.json?fields=product_name,product_name_he,brands,nutriments,nutrition_data_per,serving_size';
+    var r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!r.ok) throw new Error('שגיאת רשת מול Open Food Facts (' + r.status + ')');
+    var j = await r.json();
+    if (j.status !== 1 || !j.product) return null;
+    return mapOff(j.product, code);
+  }
+
+  /* טעינה עצלה של ספריית הברקוד (נשמרת במטמון ועובדת גם בלי רשת לאחר התקנה) */
+  var zxingP = null;
+  function ensureZXing() {
+    if (window.ZXing) return Promise.resolve(window.ZXing);
+    if (zxingP) return zxingP;
+    zxingP = new Promise(function (res, rej) {
+      var s = document.createElement('script'); s.src = 'vendor/zxing.js';
+      s.onload = function () { window.ZXing ? res(window.ZXing) : rej(new Error('no ZXing')); };
+      s.onerror = function () { zxingP = null; rej(new Error('load failed')); };
+      document.head.appendChild(s);
+    });
+    return zxingP;
+  }
+
+  var scanReader = null;
+  function stopScan() { if (scanReader) { try { scanReader.reset(); } catch (e) { } scanReader = null; } }
+
+  function openScan() {
+    openModal('<h2>סריקת ברקוד</h2><div id="scanbox"><p class="mute" id="scanmsg">מפעיל מצלמה…</p><video id="scanvid" playsinline muted></video></div>' +
+      '<p class="mute">כוון את המצלמה לברקוד של המוצר. הסריקה מתבצעת במכשיר; רק מספר הברקוד נשלח ל-Open Food Facts.</p>' +
+      '<form data-f="barcode"><label>או הזנת מספר ברקוד ידנית</label><div class="row"><input name="code" inputmode="numeric" placeholder="לדוגמה 7290000000008"><button class="primary" type="submit">חפש</button></div></form>' +
+      '<button class="block" data-a="closescan">סגירה</button>');
+    ensureZXing().then(function (ZX) {
+      var hints = new Map();
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8, ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E, ZX.BarcodeFormat.CODE_128]);
+      scanReader = new ZX.BrowserMultiFormatReader(hints, 400);
+      var vid = $('#scanvid'); if (!vid) return;
+      scanReader.decodeFromConstraints({ video: { facingMode: 'environment' } }, vid, function (result, err) {
+        if (result) { var code = result.getText(); stopScan(); onBarcode(code); }
+      }).catch(function () {
+        var m = $('#scanmsg'); if (m) m.innerHTML = 'לא הצלחתי לפתוח את המצלמה. ייתכן שצריך לאשר הרשאת מצלמה, או שהמכשיר דורש iOS 16.4 ומעלה לשימוש במצלמה באפליקציה מותקנת. אפשר להזין מספר ברקוד ידנית למטה.';
+        var v = $('#scanvid'); if (v) v.style.display = 'none';
+      });
+    }).catch(function () {
+      var m = $('#scanmsg'); if (m) m.textContent = 'טעינת רכיב הסריקה נכשלה. נסה שוב כשיש חיבור לרשת, או הזן מספר ברקוד ידנית.';
+    });
+  }
+
+  async function onBarcode(code) {
+    var msg = $('#scanmsg'); if (msg) { msg.textContent = 'מחפש מוצר (' + code + ')…'; }
+    var v = $('#scanvid'); if (v) v.style.display = 'none';
+    try {
+      var food = await offLookup(code);
+      if (!food) { if (msg) msg.innerHTML = 'הברקוד ' + esc(code) + ' לא נמצא במאגר. אפשר להזין את המוצר ידנית.'; return; }
+      closeModal(); prefillManual(food, 'הפרטים מולאו מברקוד (Open Food Facts). בדוק, תקן אם צריך, ושמור.');
+    } catch (e) { if (msg) msg.textContent = (e && e.message) || 'שגיאה בחיפוש המוצר'; }
+  }
+
+  function prefillManual(food, bannerMsg) {
+    ui.add.prefill = { food: food, msg: bannerMsg };
+    ui.add.editFood = null; ui.add.pick = null; ui.add.tab = 'manual'; ui.tab = 'add';
+    render(); window.scrollTo(0, 0);
+  }
+
+  function searchResultCard(x, i) {
+    var macro = foodLine({ base: x.base, per: x.per });
+    var tag = x.source === 'usda' ? '<span class="tag">USDA' + (x._type === 'Branded' ? ' · מותג' : '') + '</span>' : '';
+    return '<div class="card"><div class="grow" data-a="pickresult" data-i="' + i + '" style="cursor:pointer"><b>' + esc(x.name) + '</b>' + tag + (x.brand ? ' <span class="mute">· ' + esc(x.brand) + '</span>' : '') +
+      '<div class="mute">' + macro + '</div></div></div>';
   }
 
   /* ---------- מעקב משקל ---------- */
@@ -407,6 +536,12 @@
     h += '<div class="card"><h3>גיבוי ונתונים</h3><p class="mute">הנתונים נשמרים בטלפון הזה בלבד. מומלץ לייצא גיבוי מדי פעם, כי מחיקת נתוני האתר בדפדפן תמחק אותם.</p>' +
       '<button class="block" data-a="expjson">ייצוא גיבוי מלא (JSON)</button><button class="block" data-a="expcsv">ייצוא יומן ומשקל (CSV)</button><button class="block" data-a="imp">שחזור מגיבוי</button>' +
       '<input type="file" id="impfile" accept=".json,application/json" class="hide"><button class="block danger" data-a="delall">מחיקת כל הנתונים</button></div>';
+    h += '<div class="card"><h3>חיפוש מזון ומאגרים</h3>' +
+      '<p class="mute">סריקת ברקוד מחפשת במאגר Open Food Facts (בלי מפתח). חיפוש טקסט פונה למאגר USDA. אפשר להזין מפתח USDA אישי וחינמי כדי להימנע ממגבלות השימוש המשותף.</p>' +
+      '<label>מפתח USDA (לא חובה)</label><input id="usdakey" placeholder="ברירת מחדל: מפתח הדגמה משותף" value="' + esc(S.settings.usdaKey || '') + '">' +
+      '<button class="block" data-a="savekey">שמירת מפתח</button>' +
+      '<p class="mute">מפתח חינמי מתקבל מיידית בכתובת fdc.nal.usda.gov/api-key-signup.html ונשמר בטלפון הזה בלבד.</p>' +
+      '<p class="mute">פרטיות: בחיפוש נשלח טקסט החיפוש ל-USDA, ובסריקה נשלח מספר הברקוד ל-Open Food Facts. לא נשלחים נתונים אישיים, היומן או המשקל. נתוני Open Food Facts מסופקים ברישיון ODbL; נתוני USDA FoodData Central הם נחלת הכלל.</p></div>';
     h += '<div class="card"><h3>בדיקות חישוב</h3><p class="mute">מריץ את פונקציות החישוב מול מקרים עם תוצאה ידועה.</p><button class="block" data-a="tests">הרצת בדיקות</button></div>';
     var standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
     if (!standalone) h += '<div class="card"><h3>התקנה באייפון</h3><p>ב-Safari: לחץ על כפתור השיתוף, בחר “הוסף למסך הבית”. האפליקציה תיפתח כמו אפליקציה רגילה.</p></div>';
@@ -420,7 +555,7 @@
 
   /* ---------- מודלים ---------- */
   function openModal(html) { var m = $('#modal'); m.innerHTML = '<div class="sheet">' + html + '</div>'; m.classList.add('open'); }
-  function closeModal() { var m = $('#modal'); m.classList.remove('open'); m.innerHTML = ''; }
+  function closeModal() { stopScan(); var m = $('#modal'); m.classList.remove('open'); m.innerHTML = ''; }
   function entryModal(e) {
     var f = { base: e.base, per: e.per, sw: e.sw };
     openModal('<h2>' + esc(e.name) + '</h2><form data-f="entry" data-id="' + e.id + '"><label>כמות</label><div class="row"><input name="qty" inputmode="decimal" value="' + e.qty + '"><select name="unit" style="max-width:130px">' +
@@ -467,7 +602,7 @@
 
   /* ---------- אירועים ---------- */
   var actions = {
-    nav: function (d) { ui.tab = d.t; ui.set = null; ui.add.pick = null; ui.add.editFood = null; if (d.t === 'add') ui.add.meal = ui.add.meal || guessMeal(); window.scrollTo(0, 0); },
+    nav: function (d) { ui.tab = d.t; ui.set = null; ui.add.pick = null; ui.add.editFood = null; ui.add.prefill = null; if (d.t === 'add') ui.add.meal = ui.add.meal || guessMeal(); window.scrollTo(0, 0); },
     dprev: function () { ui.date = C.addDays(ui.date, -1); },
     dnext: function () { if (ui.date < C.today()) ui.date = C.addDays(ui.date, 1); else toast('אי אפשר לתעד ימים עתידיים'); },
     dtoday: function () { ui.date = C.today(); },
@@ -481,7 +616,17 @@
       S.meals.push({ id: uid(), name: name.trim(), items: items.map(function (e) { return { name: e.name, brand: e.brand, source: e.source, qty: e.qty, unit: e.unit, base: e.base, per: e.per, sw: e.sw }; }) });
       save(); toast('הארוחה נשמרה');
     },
-    atab: function (d) { ui.add.tab = d.t; ui.add.pick = null; ui.add.editFood = null; },
+    atab: function (d) { ui.add.tab = d.t; ui.add.pick = null; ui.add.editFood = null; ui.add.prefill = null; },
+    scan: function () { openScan(); },
+    closescan: function () { stopScan(); closeModal(); },
+    pickresult: function (d) {
+      var x = ui.add.search.results && ui.add.search.results[Number(d.i)];
+      if (x) prefillManual(x, 'הפרטים מולאו מתוצאת החיפוש (USDA, ל-100 גרם). אפשר לשנות את השם לעברית ולשמור.');
+    },
+    savekey: function () {
+      var el = $('#usdakey'); if (!el) return;
+      S.settings.usdaKey = el.value.trim(); save(); toast('המפתח נשמר');
+    },
     pickfood: function (d) { ui.add.pick = d.id; },
     unpick: function () { ui.add.pick = null; },
     fav: function (d) { var f = S.foods.filter(function (x) { return x.id === d.id; })[0]; if (f) { f.fav = !f.fav; save(); } },
@@ -579,7 +724,22 @@
     var f = e.target; if (!f.dataset.f) return;
     e.preventDefault();
     var fd = new FormData(f), T = f.dataset.f;
-    if (T === 'weight') {
+    if (T === 'search') {
+      var q = String(fd.get('q') || '').trim();
+      ui.add.search.q = q;
+      if (!q) { ui.add.search.results = null; ui.add.search.err = null; render(); return; }
+      ui.add.search.loading = true; ui.add.search.err = null; ui.add.search.results = null; render();
+      usdaSearch(q).then(function (list) {
+        ui.add.search.loading = false; ui.add.search.results = list; if (ui.tab === 'add' && ui.add.tab === 'search') render();
+      }).catch(function (err) {
+        ui.add.search.loading = false; ui.add.search.err = (err && err.message) || 'החיפוש נכשל. בדוק את החיבור לרשת'; if (ui.tab === 'add' && ui.add.tab === 'search') render();
+      });
+      return;
+    } else if (T === 'barcode') {
+      var code = String(fd.get('code') || '').replace(/\D/g, '');
+      if (code.length < 6) { toast('יש להזין מספר ברקוד תקין'); return; }
+      stopScan(); onBarcode(code); return;
+    } else if (T === 'weight') {
       var kg = num(fd.get('kg')), date = fd.get('date');
       if (kg === null || isNaN(kg) || kg < 25 || kg > 350) { toast('יש להזין משקל תקין'); return; }
       if (!date || date > C.today()) { toast('יש לבחור תאריך שאינו עתידי'); return; }
@@ -611,7 +771,8 @@
       var kcal = vals.kcal, note = false;
       if (kcal === null && vals.kj !== null) { kcal = C.kjToKcal(vals.kj); note = true; }
       if (kcal === null && vals.p === null && vals.c === null && vals.f === null) { toast('יש להזין לפחות ערך תזונתי אחד'); return; }
-      var food = { name: name, brand: String(fd.get('brand') || '').trim(), base: fd.get('base'), per: { kcal: kcal, p: vals.p, c: vals.c, f: vals.f }, sw: vals.sw || 0, energyNote: note, source: 'manual' };
+      var food = { name: name, brand: String(fd.get('brand') || '').trim(), base: fd.get('base'), per: { kcal: kcal, p: vals.p, c: vals.c, f: vals.f }, sw: vals.sw || 0, energyNote: note, source: f.dataset.src || 'manual' };
+      ui.add.prefill = null;
       if (f.dataset.id) {
         var old = S.foods.filter(function (x) { return x.id === f.dataset.id; })[0];
         Object.assign(old, food, { updated: Date.now() }); save(); ui.add.editFood = null; ui.add.tab = 'foods'; toast('נשמר'); render(); return;

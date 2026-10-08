@@ -65,4 +65,5 @@ button:disabled{opacity:.5}
 table{width:100%;border-collapse:collapse;font-size:15px}td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:start;vertical-align:top}
 .pass{color:var(--brand);font-weight:700}.fail{color:var(--bad);font-weight:700}
 svg text{font-family:inherit}
+#scanvid{width:100%;max-height:60vh;border-radius:12px;background:#000;object-fit:cover;display:block;margin:6px 0}
 .hide{display:none}

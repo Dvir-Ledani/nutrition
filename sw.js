@@ -1,6 +1,6 @@
 /* שומר את קבצי האפליקציה כדי שתיפתח גם בלי רשת. הנתונים עצמם נשמרים ב-localStorage, לא כאן. */
-var CACHE = 'nutrition-shell-v1';
-var FILES = ['./', 'index.html', 'style.css', 'calc.js', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+var CACHE = 'nutrition-shell-v2';
+var FILES = ['./', 'index.html', 'style.css', 'calc.js', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'vendor/zxing.js'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); }));
