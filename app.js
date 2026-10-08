@@ -8,7 +8,7 @@
   var DISCLAIMER = 'היעדים והערכות המזון הם אומדנים לצורכי מעקב ואינם תחליף לייעוץ תזונתי אישי.';
 
   /* ---------- נתונים ---------- */
-  function blank() { return { v: 1, profile: null, goals: [], foods: [], meals: [], diary: [], weights: [], settings: { usdaKey: '' } }; }
+  function blank() { return { v: 1, profile: null, goals: [], foods: [], meals: [], diary: [], weights: [], settings: { usdaKey: '', geminiKey: '', geminiConsent: false, geminiModel: '' } }; }
   function load() {
     try {
       var r = localStorage.getItem(KEY);
@@ -17,7 +17,9 @@
     return blank();
   }
   var S = load();
-  if (!S.settings) S.settings = { usdaKey: '' };
+  if (!S.settings) S.settings = {};
+  ['usdaKey', 'geminiKey', 'geminiModel'].forEach(function (k) { if (S.settings[k] === undefined) S.settings[k] = ''; });
+  if (S.settings.geminiConsent === undefined) S.settings.geminiConsent = false;
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(S)); return true; }
     catch (e) { toast('השמירה נכשלה. ייתכן שהאחסון בטלפון מלא או חסום'); return false; }
@@ -298,7 +300,7 @@
         '<div class="row"><button class="link" data-a="unpick">חזרה לרשימה</button><button class="link" data-a="efood" data-id="' + f.id + '">עריכת מוצר</button><button class="link" data-a="dfood" data-id="' + f.id + '" style="color:var(--bad)">מחיקת מוצר</button></div></div>';
       return h;
     }
-    h += '<button class="block primary" data-a="scan">📷 סריקת ברקוד</button>';
+    h += '<div class="row"><button class="primary grow" data-a="scan">📷 סריקת ברקוד</button><button class="grow" data-a="aiopen">✨ הערכת AI</button></div>';
     h += '<div class="tabs">' + [['foods', 'המוצרים שלי'], ['search', 'חיפוש במאגר'], ['fav', 'מועדפים'], ['meals', 'ארוחות שמורות'], ['manual', 'הזנה ידנית']].map(function (t) { return '<button class="' + (A.tab === t[0] ? 'on' : '') + '" data-a="atab" data-t="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
     if (A.tab === 'foods' || A.tab === 'fav') {
       h += '<input data-in="q" placeholder="חיפוש לפי שם או מותג" value="' + esc(A.q) + '"><div id="flist">' + foodList() + '</div>';
@@ -352,7 +354,12 @@
       '<div><label>חלבון (ג׳)</label><input name="p" inputmode="decimal" value="' + v(per.p) + '"></div><div><label>פחמימות (ג׳)</label><input name="c" inputmode="decimal" value="' + v(per.c) + '"></div>' +
       '<div><label>שומן (ג׳)</label><input name="f" inputmode="decimal" value="' + v(per.f) + '"></div><div><label>משקל או נפח מנה (אם ידוע)</label><input name="sw" inputmode="decimal" value="' + (src && src.sw ? src.sw : '') + '"></div></div>' +
       '<p class="mute">שדה שנשאר ריק נשמר כ“לא ידוע” ולא כאפס. משקל מנה בגרמים למוצר ל-100 גרם, ובמ״ל למוצר ל-100 מ״ל.</p>' +
-      (f ? '' : '<hr><label>כמות שנאכלה</label><div class="grid2"><input name="qty" inputmode="decimal" placeholder="לא חובה"><select name="unit"><option value="g">גרם</option><option value="ml">מ״ל</option><option value="serving">מנות</option></select></div><label>ארוחה</label>' + mealSelect(ui.add.meal) +
+      (f ? '' : (function () {
+        var dBase = src ? src.base : '100g';
+        var dUnit = dBase === 'serving' ? 'serving' : dBase === '100ml' ? 'ml' : 'g';
+        var dQty = (src && dBase === 'serving') ? '1' : '';
+        return '<hr><label>כמות שנאכלה</label><div class="grid2"><input name="qty" inputmode="decimal" placeholder="לא חובה" value="' + dQty + '"><select name="unit">' +
+          [['g', 'גרם'], ['ml', 'מ״ל'], ['serving', 'מנות']].map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === dUnit ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div><label>ארוחה</label>' + mealSelect(ui.add.meal); })() +
         '<label class="check"><input type="checkbox" name="keep" checked><span>שמור גם כמוצר אישי</span></label>') +
       '<button class="primary block" type="submit">' + (f ? 'שמור שינויים' : 'הוסף') + '</button>' + (f ? '<button type="button" class="block" data-a="unedit">ביטול</button>' : '') + '</form>';
   }
@@ -484,6 +491,122 @@
       '<div class="mute">' + macro + '</div></div></div>';
   }
 
+  /* ---------- הערכת AI (Gemini) ---------- */
+  var AI_RESULTS = null;
+  var GEM_BASE = 'https://generativelanguage.googleapis.com/v1beta/';
+  var GEM_SCHEMA = {
+    type: 'object', properties: {
+      items: {
+        type: 'array', items: {
+          type: 'object', properties: {
+            name: { type: 'string' }, grams: { type: 'number' }, kcal: { type: 'number' },
+            protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' }
+          }, required: ['name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g']
+        }
+      }
+    }, required: ['items']
+  };
+  var GEM_PROMPT = 'אתה מעריך תזונה. בהינתן תיאור ארוחה ו/או תמונה, החזר הערכה של כל פריט מזון בנפרד: name = שם קצר בעברית, grams = כמות משוערת בגרמים, ו-kcal/protein_g/carbs_g/fat_g = הערכים עבור אותה כמות משוערת (לא ל-100 גרם). היה מציאותי ושמרני. אם אי אפשר להעריך, החזר items ריק. החזר JSON בלבד לפי הסכמה.';
+
+  function geminiModel() { return (S.settings.geminiModel || '').trim() || 'gemini-flash-latest'; }
+
+  function fileToJpegBase64(file, maxDim, quality) {
+    return new Promise(function (res, rej) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var w = img.width, h = img.height, scale = Math.min(1, maxDim / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+        var c = document.createElement('canvas'); c.width = cw; c.height = ch;
+        c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+        URL.revokeObjectURL(url);
+        try { res(c.toDataURL('image/jpeg', quality).split(',')[1]); } catch (e) { rej(e); }
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('לא הצלחתי לקרוא את התמונה')); };
+      img.src = url;
+    });
+  }
+
+  async function geminiCall(model, parts) {
+    var key = (S.settings.geminiKey || '').trim();
+    var body = { contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: GEM_SCHEMA, temperature: 0.4 } };
+    var r = await fetch(GEM_BASE + 'models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key),
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return r;
+  }
+
+  async function geminiDiscoverModel() {
+    var key = (S.settings.geminiKey || '').trim();
+    var r = await fetch(GEM_BASE + 'models?key=' + encodeURIComponent(key) + '&pageSize=100');
+    if (!r.ok) return null;
+    var j = await r.json();
+    var models = (j.models || []).filter(function (m) { return (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0; });
+    var flash = models.filter(function (m) { return /flash/i.test(m.name) && !/lite|thinking|image|tts|live/i.test(m.name); });
+    var pick = (flash[0] || models[0]);
+    if (!pick) return null;
+    var name = pick.name.replace(/^models\//, '');
+    S.settings.geminiModel = name; save();
+    return name;
+  }
+
+  async function geminiEstimate(desc, imgBase64) {
+    var parts = [{ text: GEM_PROMPT + (desc ? '\nתיאור הארוחה: ' + desc : '') }];
+    if (imgBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: imgBase64 } });
+    var r = await geminiCall(geminiModel(), parts);
+    if (r.status === 404) { var nm = await geminiDiscoverModel(); if (nm) r = await geminiCall(nm, parts); }
+    if (r.status === 400) throw new Error('המפתח של Gemini אינו תקף. בדוק אותו בהגדרות');
+    if (r.status === 429) throw new Error('חרגת ממגבלת השימוש של Gemini. נסה שוב מאוחר יותר');
+    if (!r.ok) throw new Error('שגיאה מול Gemini (' + r.status + ')');
+    var j = await r.json();
+    if (j.promptFeedback && j.promptFeedback.blockReason) throw new Error('הבקשה נחסמה על ידי Gemini. נסה תיאור או תמונה אחרים');
+    var cand = j.candidates && j.candidates[0];
+    var text = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
+    if (!text) throw new Error('לא התקבלה תשובה מ-Gemini');
+    var parsed; try { parsed = JSON.parse(text); } catch (e) { throw new Error('התשובה מ-Gemini לא הייתה בפורמט צפוי'); }
+    var items = (parsed.items || []).map(function (it) {
+      return { name: String(it.name || 'פריט'), brand: '', base: 'serving', per: { kcal: numOrNull(it.kcal), p: numOrNull(it.protein_g), c: numOrNull(it.carbs_g), f: numOrNull(it.fat_g) }, sw: numOrNull(it.grams) || 0, source: 'ai' };
+    });
+    return items;
+  }
+
+  function aiResultsHtml() {
+    if (!AI_RESULTS) return '';
+    if (!AI_RESULTS.length) return '<p class="mute">לא זוהו פריטים. נסה תיאור מפורט יותר או תמונה ברורה יותר.</p>';
+    return '<h3>הערכה (אפשר לערוך אחרי הבחירה)</h3>' + AI_RESULTS.map(function (x, i) {
+      var g = x.sw ? ' · ~' + r0(x.sw) + ' ג׳' : '';
+      return '<div class="card"><div class="row between"><div class="grow"><b>' + esc(x.name) + '</b>' + g + '<div class="mute">' + kc(x.per.kcal) + ' · חלבון ' + gm(x.per.p) + ' · פחמימות ' + gm(x.per.c) + ' · שומן ' + gm(x.per.f) + '</div></div>' +
+        '<button class="primary" data-a="aipick" data-i="' + i + '">הוסף</button></div></div>';
+    }).join('') + '<p class="mute">הערכות AI הן קירוב בלבד ואינן מדידה מדויקת. מומלץ לבדוק ולתקן.</p>';
+  }
+
+  function openAi() {
+    if (!(S.settings.geminiKey || '').trim()) { toast('כדי להשתמש בהערכת AI יש להזין מפתח Gemini בהגדרות'); ui.tab = 'settings'; ui.set = null; render(); window.scrollTo(0, 0); return; }
+    AI_RESULTS = null;
+    var consent = S.settings.geminiConsent;
+    var consentHtml = consent ? '' :
+      '<div class="note">בשימוש בתכונה זו, הטקסט ו/או התמונה שתשלח נשלחים ל-Google (Gemini) לצורך ההערכה. בשכבה החינמית Google עשויה להשתמש בתוכן לשיפור מוצריה. אל תשלח מידע רגיש. אין לשלוח תמונות של אנשים.</div>' +
+      '<label class="check"><input type="checkbox" id="aiConsent"><span>הבנתי ואני מאשר לשלוח את התיאור/התמונה ל-Google</span></label>';
+    openModal('<h2>הערכת AI</h2>' + consentHtml +
+      '<form data-f="ai"><label>תיאור הארוחה (עברית)</label><textarea name="desc" rows="3" placeholder="לדוגמה: 2 ביצים קשות, פרוסת לחם מלא וכף טחינה"></textarea>' +
+      '<label>או תמונה של הצלחת (לא חובה)</label><input type="file" name="photo" accept="image/*" capture="environment">' +
+      '<button class="primary block" type="submit">הערך</button></form>' +
+      '<div id="aibox"></div><button class="block" data-a="closemodal">סגירה</button>');
+  }
+
+  async function runAi(form) {
+    var box = $('#aibox'); if (box) box.innerHTML = '<div class="okbox">שולח ל-Gemini ומעריך…</div>';
+    try {
+      var fd = new FormData(form);
+      var desc = String(fd.get('desc') || '').trim();
+      var file = fd.get('photo'), img = null;
+      if (file && file.size) img = await fileToJpegBase64(file, 1024, 0.7);
+      if (!desc && !img) { if (box) box.innerHTML = '<div class="err">יש להזין תיאור או לבחור תמונה</div>'; return; }
+      AI_RESULTS = await geminiEstimate(desc, img);
+      if (box) box.innerHTML = aiResultsHtml();
+    } catch (e) {
+      if (box) box.innerHTML = '<div class="err">' + esc((e && e.message) || 'ההערכה נכשלה') + '</div>';
+    }
+  }
+
   /* ---------- מעקב משקל ---------- */
   function viewWeight() {
     var ws = S.weights.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
@@ -542,6 +665,12 @@
       '<button class="block" data-a="savekey">שמירת מפתח</button>' +
       '<p class="mute">מפתח חינמי מתקבל מיידית בכתובת fdc.nal.usda.gov/api-key-signup.html ונשמר בטלפון הזה בלבד.</p>' +
       '<p class="mute">פרטיות: בחיפוש נשלח טקסט החיפוש ל-USDA, ובסריקה נשלח מספר הברקוד ל-Open Food Facts. לא נשלחים נתונים אישיים, היומן או המשקל. נתוני Open Food Facts מסופקים ברישיון ODbL; נתוני USDA FoodData Central הם נחלת הכלל.</p></div>';
+    h += '<div class="card"><h3>הערכת AI (Gemini)</h3>' +
+      '<p class="mute">מאפשר לתאר ארוחה או לצלם צלחת ולקבל הערכת ערכים תזונתיים. אופציונלי, ודורש מפתח Gemini אישי וחינמי.</p>' +
+      '<label>מפתח Gemini (לא חובה)</label><input id="gemkey" placeholder="מפתח מ-Google AI Studio" value="' + esc(S.settings.geminiKey || '') + '">' +
+      '<button class="block" data-a="savegem">שמירת מפתח</button>' +
+      '<p class="mute">מפתח חינמי מתקבל בכתובת aistudio.google.com/apikey ונשמר בטלפון הזה בלבד.</p>' +
+      '<p class="mute">פרטיות: התיאור או התמונה שתשלח נשלחים ל-Google. בשכבה החינמית Google עשויה להשתמש בתוכן לשיפור מוצריה; אל תשלח מידע רגיש או תמונות של אנשים. ההערכות הן קירוב בלבד ואינן ייעוץ תזונתי.</p></div>';
     h += '<div class="card"><h3>בדיקות חישוב</h3><p class="mute">מריץ את פונקציות החישוב מול מקרים עם תוצאה ידועה.</p><button class="block" data-a="tests">הרצת בדיקות</button></div>';
     var standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
     if (!standalone) h += '<div class="card"><h3>התקנה באייפון</h3><p>ב-Safari: לחץ על כפתור השיתוף, בחר “הוסף למסך הבית”. האפליקציה תיפתח כמו אפליקציה רגילה.</p></div>';
@@ -619,6 +748,11 @@
     atab: function (d) { ui.add.tab = d.t; ui.add.pick = null; ui.add.editFood = null; ui.add.prefill = null; },
     scan: function () { openScan(); },
     closescan: function () { stopScan(); closeModal(); },
+    aiopen: function () { openAi(); },
+    aipick: function (d) {
+      var x = AI_RESULTS && AI_RESULTS[Number(d.i)];
+      if (x) { closeModal(); prefillManual(x, 'הפרטים מולאו מהערכת AI (קירוב). בדוק, תקן, ושמור. היחידה היא “מנה” בכמות המשוערת.'); }
+    },
     pickresult: function (d) {
       var x = ui.add.search.results && ui.add.search.results[Number(d.i)];
       if (x) prefillManual(x, 'הפרטים מולאו מתוצאת החיפוש (USDA, ל-100 גרם). אפשר לשנות את השם לעברית ולשמור.');
@@ -626,6 +760,10 @@
     savekey: function () {
       var el = $('#usdakey'); if (!el) return;
       S.settings.usdaKey = el.value.trim(); save(); toast('המפתח נשמר');
+    },
+    savegem: function () {
+      var el = $('#gemkey'); if (!el) return;
+      S.settings.geminiKey = el.value.trim(); S.settings.geminiModel = ''; save(); toast('המפתח נשמר');
     },
     pickfood: function (d) { ui.add.pick = d.id; },
     unpick: function () { ui.add.pick = null; },
@@ -739,6 +877,13 @@
       var code = String(fd.get('code') || '').replace(/\D/g, '');
       if (code.length < 6) { toast('יש להזין מספר ברקוד תקין'); return; }
       stopScan(); onBarcode(code); return;
+    } else if (T === 'ai') {
+      if (!S.settings.geminiConsent) {
+        var cb = $('#aiConsent');
+        if (!cb || !cb.checked) { toast('יש לאשר את שליחת התיאור/התמונה ל-Google'); return; }
+        S.settings.geminiConsent = true; save();
+      }
+      runAi(f); return;
     } else if (T === 'weight') {
       var kg = num(fd.get('kg')), date = fd.get('date');
       if (kg === null || isNaN(kg) || kg < 25 || kg > 350) { toast('יש להזין משקל תקין'); return; }
