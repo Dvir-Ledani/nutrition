@@ -1,5 +1,5 @@
 /* שומר את קבצי האפליקציה כדי שתיפתח גם בלי רשת. הנתונים עצמם נשמרים ב-localStorage, לא כאן. */
-var CACHE = 'nutrition-shell-v3';
+var CACHE = 'nutrition-shell-v4';
 var FILES = ['./', 'index.html', 'style.css', 'calc.js', 'app.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'vendor/zxing.js'];
 
 self.addEventListener('install', function (e) {

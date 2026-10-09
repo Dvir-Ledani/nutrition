@@ -673,7 +673,13 @@
       '<p class="mute">פרטיות: התיאור או התמונה שתשלח נשלחים ל-Google. בשכבה החינמית Google עשויה להשתמש בתוכן לשיפור מוצריה; אל תשלח מידע רגיש או תמונות של אנשים. ההערכות הן קירוב בלבד ואינן ייעוץ תזונתי.</p></div>';
     h += '<div class="card"><h3>בדיקות חישוב</h3><p class="mute">מריץ את פונקציות החישוב מול מקרים עם תוצאה ידועה.</p><button class="block" data-a="tests">הרצת בדיקות</button></div>';
     var standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
-    if (!standalone) h += '<div class="card"><h3>התקנה באייפון</h3><p>ב-Safari: לחץ על כפתור השיתוף, בחר “הוסף למסך הבית”. האפליקציה תיפתח כמו אפליקציה רגילה.</p></div>';
+    if (!standalone) {
+      var ua = navigator.userAgent || '', ins;
+      if (/android/i.test(ua)) ins = { t: 'התקנה באנדרואיד', p: 'ב-Chrome: אם מופיע באנר “התקנת אפליקציה” אשר אותו. אחרת פתח את תפריט שלוש הנקודות (⋮) ובחר “התקנת אפליקציה” או “הוספה למסך הבית”. האפליקציה תיפתח כמו אפליקציה רגילה.' };
+      else if (/iphone|ipad|ipod/i.test(ua)) ins = { t: 'התקנה באייפון', p: 'ב-Safari: לחץ על כפתור השיתוף (ריבוע עם חץ), בחר “הוסף למסך הבית”. האפליקציה תיפתח כמו אפליקציה רגילה.' };
+      else ins = { t: 'התקנה בטלפון', p: 'פתח את הכתובת בדפדפן של הטלפון — באייפון ב-Safari (שיתוף ← “הוסף למסך הבית”), באנדרואיד ב-Chrome (תפריט ⋮ ← “התקנת אפליקציה”).' };
+      h += '<div class="card"><h3>' + ins.t + '</h3><p>' + ins.p + '</p></div>';
+    }
     return h + '<p class="mute">' + DISCLAIMER + '</p>';
   }
   function viewTests() {
