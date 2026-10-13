@@ -493,7 +493,7 @@
   }
 
   /* ---------- הערכת AI (Gemini) ---------- */
-  var AI_RESULTS = null;
+  var AI_RESULTS = null, aiMeal = null;
   var GEM_BASE = 'https://generativelanguage.googleapis.com/v1beta/';
   var GEM_SCHEMA = {
     type: 'object', properties: {
@@ -676,16 +676,25 @@
   function aiResultsHtml() {
     if (!AI_RESULTS) return '';
     if (!AI_RESULTS.length) return '<p class="mute">לא זוהו פריטים. נסה תיאור מפורט יותר או תמונה ברורה יותר.</p>';
-    return '<h3>הערכה (אפשר לערוך אחרי הבחירה)</h3>' + AI_RESULTS.map(function (x, i) {
+    if (!aiMeal) aiMeal = guessMeal();
+    var remaining = AI_RESULTS.filter(function (x) { return !x._added; }).length;
+    var h = '<h3>הערכה</h3><label style="margin-top:0">הוספה לארוחה</label><select id="aimeal">' +
+      MEALS.map(function (m) { return '<option value="' + m[0] + '"' + (m[0] === aiMeal ? ' selected' : '') + '>' + m[1] + '</option>'; }).join('') + '</select>';
+    h += AI_RESULTS.map(function (x, i) {
       var g = x.sw ? ' · ~' + r0(x.sw) + ' ג׳' : '';
-      return '<div class="card"><div class="row between"><div class="grow"><b>' + esc(x.name) + '</b>' + g + '<div class="mute">' + kc(x.per.kcal) + ' · חלבון ' + gm(x.per.p) + ' · פחמימות ' + gm(x.per.c) + ' · שומן ' + gm(x.per.f) + '</div></div>' +
-        '<button class="primary" data-a="aipick" data-i="' + i + '">הוסף</button></div></div>';
-    }).join('') + '<p class="mute">הערכות AI הן קירוב בלבד ואינן מדידה מדויקת. מומלץ לבדוק ולתקן.</p>';
+      var macros = kc(x.per.kcal) + ' · חלבון ' + gm(x.per.p) + ' · פחמימות ' + gm(x.per.c) + ' · שומן ' + gm(x.per.f);
+      var right = x._added ? '<span class="pass">✓ נוסף</span>' :
+        '<button class="primary" data-a="aiadd" data-i="' + i + '">הוסף</button> <button class="link" data-a="aipick" data-i="' + i + '">ערוך</button>';
+      return '<div class="card"><div class="row between"><div class="grow"><b>' + esc(x.name) + '</b>' + g + '<div class="mute">' + macros + '</div></div><div style="white-space:nowrap">' + right + '</div></div></div>';
+    }).join('');
+    if (remaining > 1) h += '<button class="block primary" data-a="aiaddall">הוספת כל הפריטים שנותרו (' + remaining + ')</button>';
+    h += '<p class="mute">הערכות AI הן קירוב בלבד. אחרי ההוספה אפשר לתקן את הכמות ליומן, או ללחוץ “ערוך” לפני ההוספה כדי לשנות ערכים.</p>';
+    return h;
   }
 
   function openAi() {
     if (!(S.settings.geminiKey || '').trim()) { toast('כדי להשתמש בהערכת AI יש להזין מפתח Gemini בהגדרות'); ui.tab = 'settings'; ui.set = null; render(); window.scrollTo(0, 0); return; }
-    AI_RESULTS = null;
+    AI_RESULTS = null; aiMeal = guessMeal();
     var consent = S.settings.geminiConsent;
     var consentHtml = consent ? '' :
       '<div class="note">בשימוש בתכונה זו, הטקסט ו/או התמונה שתשלח נשלחים ל-Google (Gemini) לצורך ההערכה. בשכבה החינמית Google עשויה להשתמש בתוכן לשיפור מוצריה. אל תשלח מידע רגיש. אין לשלוח תמונות של אנשים.</div>' +
@@ -866,6 +875,26 @@
       var x = AI_RESULTS && AI_RESULTS[Number(d.i)];
       if (x) { closeModal(); prefillManual(x, 'הפרטים מולאו מהערכת AI (קירוב). בדוק, תקן, ושמור. היחידה היא “מנה” בכמות המשוערת.'); }
     },
+    aiadd: function (d) {
+      var x = AI_RESULTS && AI_RESULTS[Number(d.i)]; if (!x || x._added) return;
+      var ent = makeEntry(x, 1, 'serving', aiMeal || guessMeal(), C.today());
+      if (!ent) return;
+      S.diary.push(ent); x._added = true; save();
+      var box = $('#aibox'); if (box) box.innerHTML = aiResultsHtml();
+      toast('נוסף ליומן');
+    },
+    aiaddall: function () {
+      if (!AI_RESULTS) return;
+      var meal = aiMeal || guessMeal(), added = 0;
+      AI_RESULTS.forEach(function (x) {
+        if (x._added) return;
+        var ent = makeEntry(x, 1, 'serving', meal, C.today());
+        if (ent) { S.diary.push(ent); x._added = true; added++; }
+      });
+      if (added) save();
+      var box = $('#aibox'); if (box) box.innerHTML = aiResultsHtml();
+      toast(added ? 'נוספו ' + added + ' פריטים ליומן' : 'לא נוסף דבר');
+    },
     pickresult: function (d) {
       var x = ui.add.search.results && ui.add.search.results[Number(d.i)];
       if (x) prefillManual(x, 'הפרטים מולאו מתוצאת החיפוש (USDA, ל-100 גרם). אפשר לשנות את השם לעברית ולשמור.');
@@ -952,6 +981,7 @@
     }
   });
   document.addEventListener('change', function (e) {
+    if (e.target.id === 'aimeal') { aiMeal = e.target.value; return; }
     if (e.target.name === 'base' && e.target.form && e.target.form.dataset.f === 'manual') {
       var us = e.target.form.querySelector('select[name=unit]');
       if (us) us.value = e.target.value === 'serving' ? 'serving' : e.target.value === '100ml' ? 'ml' : 'g';
