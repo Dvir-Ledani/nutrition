@@ -255,6 +255,7 @@
         macroBar('פחמימות', t.c, gg.c, 'var(--c)', t.partial.c) + macroBar('חלבון', t.p, gg.p, 'var(--p)', t.partial.p) + macroBar('שומן', t.f, gg.f, 'var(--f)', t.partial.f);
       if (d < S.goals.slice().sort(function (a, b) { return a.from < b.from ? -1 : 1; })[0].from) h += '<p class="mute">היום הזה קודם ליעד הראשון, ולכן הוא מוצג מול היעד הראשון.</p>';
       h += '</div>';
+      if (d === C.today()) h += '<button class="block" data-a="suggest">✨ מה לאכול עכשיו?</button>';
     } else {
       h += '<div class="note">עדיין אין יעד יומי. אפשר לתעד אוכל, ולחשב יעד דרך “הגדרות” ← “עדכון פרופיל”.</div>' +
         '<div class="card"><div class="mute">נרשם</div><div class="big">' + r0(t.kcal) + ' קק״ל</div>' + (t.partial.kcal ? '<p class="mute">הסיכום חלקי: יש פריטים ללא קלוריות</p>' : '') + '</div>';
@@ -528,9 +529,9 @@
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-  async function geminiCall(model, parts) {
+  async function geminiCall(model, parts, schema) {
     var key = (S.settings.geminiKey || '').trim();
-    var body = { contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: GEM_SCHEMA, temperature: 0.4 } };
+    var body = { contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: schema || GEM_SCHEMA, temperature: 0.4 } };
     var url = GEM_BASE + 'models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key);
     var opt = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
     /* ניסיונות חוזרים על שגיאות שרת זמניות (500/502/503/504) ועל תקלות רשת */
@@ -559,25 +560,117 @@
     return name;
   }
 
-  async function geminiEstimate(desc, imgBase64) {
-    var parts = [{ text: GEM_PROMPT + (desc ? '\nתיאור הארוחה: ' + desc : '') }];
-    if (imgBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: imgBase64 } });
-    var r = await geminiCall(geminiModel(), parts);
-    if (r.status === 404) { var nm = await geminiDiscoverModel(); if (nm) r = await geminiCall(nm, parts); }
+  async function geminiRun(parts, schema) {
+    var r = await geminiCall(geminiModel(), parts, schema);
+    if (r.status === 404) { var nm = await geminiDiscoverModel(); if (nm) r = await geminiCall(nm, parts, schema); }
     if (r.status === 400) throw new Error('המפתח של Gemini אינו תקף. בדוק אותו בהגדרות');
     if (r.status === 429) throw new Error('חרגת ממגבלת השימוש של Gemini. נסה שוב מאוחר יותר');
-    if ([500, 502, 503, 504].indexOf(r.status) >= 0) throw new Error('השרת של Gemini עמוס או איטי כרגע (' + r.status + '). נסה שוב בעוד רגע, או השתמש בתיאור טקסט במקום תמונה');
+    if ([500, 502, 503, 504].indexOf(r.status) >= 0) throw new Error('השרת של Gemini עמוס או איטי כרגע (' + r.status + '). נסה שוב בעוד רגע');
     if (!r.ok) throw new Error('שגיאה מול Gemini (' + r.status + ')');
     var j = await r.json();
-    if (j.promptFeedback && j.promptFeedback.blockReason) throw new Error('הבקשה נחסמה על ידי Gemini. נסה תיאור או תמונה אחרים');
+    if (j.promptFeedback && j.promptFeedback.blockReason) throw new Error('הבקשה נחסמה על ידי Gemini. נסה שוב');
     var cand = j.candidates && j.candidates[0];
     var text = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
     if (!text) throw new Error('לא התקבלה תשובה מ-Gemini');
-    var parsed; try { parsed = JSON.parse(text); } catch (e) { throw new Error('התשובה מ-Gemini לא הייתה בפורמט צפוי'); }
-    var items = (parsed.items || []).map(function (it) {
+    try { return JSON.parse(text); } catch (e) { throw new Error('התשובה מ-Gemini לא הייתה בפורמט צפוי'); }
+  }
+
+  async function geminiEstimate(desc, imgBase64) {
+    var parts = [{ text: GEM_PROMPT + (desc ? '\nתיאור הארוחה: ' + desc : '') }];
+    if (imgBase64) parts.push({ inlineData: { mimeType: 'image/jpeg', data: imgBase64 } });
+    var parsed = await geminiRun(parts, GEM_SCHEMA);
+    return (parsed.items || []).map(function (it) {
       return { name: String(it.name || 'פריט'), brand: '', base: 'serving', per: { kcal: numOrNull(it.kcal), p: numOrNull(it.protein_g), c: numOrNull(it.carbs_g), f: numOrNull(it.fat_g) }, sw: numOrNull(it.grams) || 0, source: 'ai' };
     });
-    return items;
+  }
+
+  /* ---------- הצעה להמשך היום ---------- */
+  var SUGGEST_SCHEMA = {
+    type: 'object', properties: {
+      suggestions: {
+        type: 'array', items: {
+          type: 'object', properties: {
+            title: { type: 'string' }, description: { type: 'string' },
+            kcal: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' }
+          }, required: ['title', 'description', 'kcal', 'protein_g', 'carbs_g', 'fat_g']
+        }
+      }
+    }, required: ['suggestions']
+  };
+
+  function dayRemaining() {
+    var g = C.goalInEffect(S.goals, C.today()); if (!g) return null;
+    var es = S.diary.filter(function (e) { return e.date === C.today(); });
+    var t = C.totals(es.map(function (e) { return e.snap; }));
+    var gg = C.macroGrams(g.kcal, g.pct);
+    return {
+      goalKcal: g.kcal, eatenKcal: t.kcal,
+      kcal: g.kcal - t.kcal,
+      p: gg.p - (t.p || 0), c: gg.c - (t.c || 0), f: gg.f - (t.f || 0),
+      partial: t.partial.kcal || t.partial.p || t.partial.c || t.partial.f
+    };
+  }
+
+  function prefsText() {
+    var p = S.profile && S.profile.prefs; if (!p) return '';
+    var a = [];
+    if (p.vegan) a.push('טבעוני'); else if (p.veg) a.push('צמחוני');
+    if (p.kosher) a.push('כשר');
+    if (p.allergies) a.push('אלרגיות: ' + p.allergies);
+    if (p.dislikes) a.push('לא אוהב: ' + p.dislikes);
+    return a.length ? a.join('; ') : '';
+  }
+
+  async function geminiSuggest(rem) {
+    var pr = prefsText();
+    var txt = 'אני מתעד תזונה להמשך היום. נותרו לי בערך: ' + r0(rem.kcal) + ' קק״ל, חלבון ' + r0(rem.p) + ' ג׳, פחמימות ' + r0(rem.c) + ' ג׳, שומן ' + r0(rem.f) + ' ג׳. ' +
+      'הצע 2-3 אפשרויות לארוחה להמשך היום שמתאימות בערך לכמויות שנותרו (לא חובה לדייק, קירוב סביר). התאם למטבח ישראלי ולמצרכים נגישים בסופר בישראל. ' +
+      (pr ? 'קח בחשבון העדפות תזונה: ' + pr + '. ' : '') +
+      'לכל הצעה: title = שם קצר, description = מה כולל והכמויות בקירוב, ו-kcal/protein_g/carbs_g/fat_g = אומדן לכלל ההצעה. החזר JSON לפי הסכמה.';
+    var parsed = await geminiRun([{ text: txt }], SUGGEST_SCHEMA);
+    return parsed.suggestions || [];
+  }
+
+  function remHtml(rem) {
+    function pos(x) { return Math.max(0, r0(x)); }
+    var over = rem.kcal < 0;
+    return '<div class="' + (over ? 'note' : 'okbox') + '">' +
+      (over ? 'עברת את היעד היומי ב-' + r0(-rem.kcal) + ' קק״ל.' :
+        'נותרו היום: <b>' + r0(rem.kcal) + ' קק״ל</b> · חלבון ' + pos(rem.p) + ' ג׳ · פחמימות ' + pos(rem.c) + ' ג׳ · שומן ' + pos(rem.f) + ' ג׳') +
+      (rem.partial ? '<br><span class="mute">חלק מהפריטים היום ללא ערכים מלאים, כך שהחישוב משוער.</span>' : '') + '</div>';
+  }
+  function suggestHtml(list) {
+    if (!list) return '';
+    if (!list.length) return '<p class="mute">לא התקבלו הצעות. נסה שוב.</p>';
+    return list.map(function (s) {
+      return '<div class="card"><h3>' + esc(s.title) + '</h3><p>' + esc(s.description) + '</p>' +
+        '<p class="mute">~' + r0(s.kcal) + ' קק״ל · חלבון ' + r0(s.protein_g) + ' ג׳ · פחמימות ' + r0(s.carbs_g) + ' ג׳ · שומן ' + r0(s.fat_g) + ' ג׳</p></div>';
+    }).join('') + '<p class="mute">ההצעות הן אומדן כללי ואינן ייעוץ תזונתי. התאם לעצמך ולמה שיש בבית.</p>';
+  }
+
+  function openSuggest() {
+    var rem = dayRemaining();
+    if (!rem) { toast('צריך יעד יומי כדי לקבל הצעה. אפשר לחשב דרך ההגדרות'); return; }
+    var hasKey = !!(S.settings.geminiKey || '').trim();
+    var consent = S.settings.geminiConsent;
+    var body = '<h2>מה לאכול עכשיו?</h2>' + remHtml(rem);
+    if (!hasKey) {
+      body += '<p>אלה המספרים שנותרו לך להיום. כדי לקבל גם הצעות ארוחה חכמות, הזן מפתח Gemini בהגדרות.</p>';
+    } else {
+      if (!consent) body += '<div class="note">כדי להציע, נשלחות ל-Google (Gemini) רק הכמויות שנותרו והעדפות התזונה שלך — בלי היומן, המשקל או פרטים אישיים.</div><label class="check"><input type="checkbox" id="sgConsent"><span>הבנתי ואני מאשר</span></label>';
+      body += '<form data-f="suggestgo"><button class="primary block" type="submit">הצע לי ארוחה</button></form>';
+    }
+    body += '<div id="sgbox"></div><button class="block" data-a="closemodal">סגירה</button>';
+    openModal(body);
+  }
+
+  async function runSuggest() {
+    var box = $('#sgbox'); if (box) box.innerHTML = '<div class="okbox">חושב הצעות…</div>';
+    try {
+      var rem = dayRemaining(); if (!rem) throw new Error('אין יעד יומי');
+      var list = await geminiSuggest(rem);
+      if (box) box.innerHTML = suggestHtml(list);
+    } catch (e) { if (box) box.innerHTML = '<div class="err">' + esc((e && e.message) || 'ההצעה נכשלה') + '</div>'; }
   }
 
   function aiResultsHtml() {
@@ -767,6 +860,7 @@
     scan: function () { openScan(); },
     closescan: function () { stopScan(); closeModal(); },
     aiopen: function () { openAi(); },
+    suggest: function () { openSuggest(); },
     aipick: function (d) {
       var x = AI_RESULTS && AI_RESULTS[Number(d.i)];
       if (x) { closeModal(); prefillManual(x, 'הפרטים מולאו מהערכת AI (קירוב). בדוק, תקן, ושמור. היחידה היא “מנה” בכמות המשוערת.'); }
@@ -902,6 +996,13 @@
         S.settings.geminiConsent = true; save();
       }
       runAi(f); return;
+    } else if (T === 'suggestgo') {
+      if (!S.settings.geminiConsent) {
+        var sc = $('#sgConsent');
+        if (!sc || !sc.checked) { toast('יש לאשר את שליחת הנתונים ל-Google'); return; }
+        S.settings.geminiConsent = true; save();
+      }
+      runSuggest(); return;
     } else if (T === 'weight') {
       var kg = num(fd.get('kg')), date = fd.get('date');
       if (kg === null || isNaN(kg) || kg < 25 || kg > 350) { toast('יש להזין משקל תקין'); return; }
