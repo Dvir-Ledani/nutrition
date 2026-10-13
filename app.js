@@ -526,11 +526,22 @@
     });
   }
 
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
   async function geminiCall(model, parts) {
     var key = (S.settings.geminiKey || '').trim();
     var body = { contents: [{ parts: parts }], generationConfig: { responseMimeType: 'application/json', responseSchema: GEM_SCHEMA, temperature: 0.4 } };
-    var r = await fetch(GEM_BASE + 'models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key),
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var url = GEM_BASE + 'models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(key);
+    var opt = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    /* ניסיונות חוזרים על שגיאות שרת זמניות (500/502/503/504) ועל תקלות רשת */
+    var delays = [0, 2000, 4000], r = null, netErr = null;
+    for (var i = 0; i < delays.length; i++) {
+      if (delays[i]) await sleep(delays[i]);
+      try { r = await fetch(url, opt); netErr = null; } catch (e) { netErr = e; continue; }
+      if ([500, 502, 503, 504].indexOf(r.status) >= 0 && i < delays.length - 1) continue;
+      return r;
+    }
+    if (netErr) throw new Error('בעיית רשת בחיבור ל-Gemini. בדוק את החיבור לאינטרנט ונסה שוב');
     return r;
   }
 
@@ -555,6 +566,7 @@
     if (r.status === 404) { var nm = await geminiDiscoverModel(); if (nm) r = await geminiCall(nm, parts); }
     if (r.status === 400) throw new Error('המפתח של Gemini אינו תקף. בדוק אותו בהגדרות');
     if (r.status === 429) throw new Error('חרגת ממגבלת השימוש של Gemini. נסה שוב מאוחר יותר');
+    if ([500, 502, 503, 504].indexOf(r.status) >= 0) throw new Error('השרת של Gemini עמוס או איטי כרגע (' + r.status + '). נסה שוב בעוד רגע, או השתמש בתיאור טקסט במקום תמונה');
     if (!r.ok) throw new Error('שגיאה מול Gemini (' + r.status + ')');
     var j = await r.json();
     if (j.promptFeedback && j.promptFeedback.blockReason) throw new Error('הבקשה נחסמה על ידי Gemini. נסה תיאור או תמונה אחרים');
