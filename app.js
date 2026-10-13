@@ -692,7 +692,8 @@
       '<label class="check"><input type="checkbox" id="aiConsent"><span>הבנתי ואני מאשר לשלוח את התיאור/התמונה ל-Google</span></label>';
     openModal('<h2>הערכת AI</h2>' + consentHtml +
       '<form data-f="ai"><label>תיאור הארוחה (עברית)</label><textarea name="desc" rows="3" placeholder="לדוגמה: 2 ביצים קשות, פרוסת לחם מלא וכף טחינה"></textarea>' +
-      '<label>או תמונה של הצלחת (לא חובה)</label><input type="file" name="photo" accept="image/*" capture="environment">' +
+      '<label>או תמונה של הצלחת (לא חובה)</label><input type="file" name="photo" accept="image/*">' +
+      '<p class="mute">אפשר לצלם עכשיו או לבחור תמונה קיימת מהגלריה.</p>' +
       '<button class="primary block" type="submit">הערך</button></form>' +
       '<div id="aibox"></div><button class="block" data-a="closemodal">סגירה</button>');
   }
