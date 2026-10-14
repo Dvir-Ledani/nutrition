@@ -509,7 +509,7 @@
   };
   var GEM_PROMPT = 'אתה מעריך תזונה. בהינתן תיאור ארוחה ו/או תמונה, החזר הערכה של כל פריט מזון בנפרד: name = שם קצר בעברית, grams = כמות משוערת בגרמים, ו-kcal/protein_g/carbs_g/fat_g = הערכים עבור אותה כמות משוערת (לא ל-100 גרם). היה מציאותי ושמרני. אם אי אפשר להעריך, החזר items ריק. החזר JSON בלבד לפי הסכמה.';
 
-  function geminiModel() { return (S.settings.geminiModel || '').trim() || 'gemini-flash-latest'; }
+  function geminiModel() { return (S.settings.geminiModel || '').trim() || 'gemini-flash-lite-latest'; }
 
   function fileToJpegBase64(file, maxDim, quality) {
     return new Promise(function (res, rej) {
@@ -552,8 +552,10 @@
     if (!r.ok) return null;
     var j = await r.json();
     var models = (j.models || []).filter(function (m) { return (m.supportedGenerationMethods || []).indexOf('generateContent') >= 0; });
-    var flash = models.filter(function (m) { return /flash/i.test(m.name) && !/lite|thinking|image|tts|live/i.test(m.name); });
-    var pick = (flash[0] || models[0]);
+    var bad = /thinking|image|tts|live|audio|vision-only|embedding/i;
+    var lite = models.filter(function (m) { return /flash/i.test(m.name) && /lite/i.test(m.name) && !bad.test(m.name); });
+    var flash = models.filter(function (m) { return /flash/i.test(m.name) && !/lite/i.test(m.name) && !bad.test(m.name); });
+    var pick = (lite[0] || flash[0] || models[0]);
     if (!pick) return null;
     var name = pick.name.replace(/^models\//, '');
     S.settings.geminiModel = name; save();
@@ -785,6 +787,9 @@
       '<label>מפתח Gemini (לא חובה)</label><input id="gemkey" placeholder="מפתח מ-Google AI Studio" value="' + esc(S.settings.geminiKey || '') + '">' +
       '<button class="block" data-a="savegem">שמירת מפתח</button>' +
       '<p class="mute">מפתח חינמי מתקבל בכתובת aistudio.google.com/apikey ונשמר בטלפון הזה בלבד.</p>' +
+      '<label>מודל (לא חובה)</label><input id="gemmodel" placeholder="ברירת מחדל: gemini-flash-lite-latest" value="' + esc(S.settings.geminiModel || '') + '">' +
+      '<button class="block" data-a="savemodel">שמירת מודל</button>' +
+      '<p class="mute">ברירת המחדל היא Flash-Lite — המכסה החינמית שלו נדיבה (עד 500 בקשות ליום). אם קיבלת הודעת חריגה ממכסה, זו הבחירה המומלצת. לדיוק מעט גבוה יותר אפשר gemini-flash-latest, אך המכסה החינמית שלו נמוכה בהרבה.</p>' +
       '<p class="mute">פרטיות: התיאור או התמונה שתשלח נשלחים ל-Google. בשכבה החינמית Google עשויה להשתמש בתוכן לשיפור מוצריה; אל תשלח מידע רגיש או תמונות של אנשים. ההערכות הן קירוב בלבד ואינן ייעוץ תזונתי.</p></div>';
     h += '<div class="card"><h3>בדיקות חישוב</h3><p class="mute">מריץ את פונקציות החישוב מול מקרים עם תוצאה ידועה.</p><button class="block" data-a="tests">הרצת בדיקות</button></div>';
     var standalone = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
@@ -905,7 +910,11 @@
     },
     savegem: function () {
       var el = $('#gemkey'); if (!el) return;
-      S.settings.geminiKey = el.value.trim(); S.settings.geminiModel = ''; save(); toast('המפתח נשמר');
+      S.settings.geminiKey = el.value.trim(); save(); toast('המפתח נשמר');
+    },
+    savemodel: function () {
+      var el = $('#gemmodel'); if (!el) return;
+      S.settings.geminiModel = el.value.trim(); save(); toast('המודל נשמר');
     },
     pickfood: function (d) { ui.add.pick = d.id; },
     unpick: function () { ui.add.pick = null; },
